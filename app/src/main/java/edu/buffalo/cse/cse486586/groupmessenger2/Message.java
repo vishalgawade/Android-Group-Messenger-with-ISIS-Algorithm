@@ -8,15 +8,38 @@ public class Message {
     private boolean isDelivered;
     private int avd_id;
 
-    protected Message(Integer proposed_seq, String message, boolean isDelivered, int avd_id) {
+
+    private int failedPort;
+
+    protected Message(Integer proposed_seq, String message, boolean isDelivered, int avd_id, int failedPort) {
         this.proposed_seq = proposed_seq;
         this.message = message;
         this.isDelivered = isDelivered;
         this.avd_id = avd_id;
+        this.failedPort = failedPort;
+    }
+
+    public Integer getFailedPort() {
+        return failedPort;
+    }
+
+    public void setFailedPort(Integer failedPort) {
+        this.failedPort = failedPort;
     }
 
     public int getAvd_id() {
         return avd_id;
+    }
+
+    @Override
+    public String toString() {
+        return "Message{" +
+                "proposed_seq=" + proposed_seq +
+                ", message='" + message + '\'' +
+                ", isDelivered=" + isDelivered +
+                ", avd_id=" + avd_id +
+                ", failedPort=" + failedPort +
+                '}';
     }
 
     public void setAvd_id(int avd_id) {
@@ -48,7 +71,7 @@ public class Message {
     }
 
     protected static String encodeMessage(Message message){
-        return message.getMessage()+","+message.getProposed_seq()+","+message.getAvd_id()+","+delivered(message.isDelivered());
+        return message.getMessage()+","+message.getProposed_seq()+","+message.getAvd_id()+","+delivered(message.isDelivered())+","+message.getFailedPort();
     }
 
     protected static Message decodeMessage(String message){
@@ -57,7 +80,8 @@ public class Message {
         boolean isDelivered=array[3].equals("Yes")?true:false;
         String msg=array[0];
         Integer seq=Integer.parseInt(array[1]);
-        return new Message(seq ,msg,isDelivered,avdid);
+        int failedPort = Integer.parseInt(array[4]);
+        return new Message(seq ,msg,isDelivered,avdid,failedPort);
     }
 
     private static String delivered(boolean status){

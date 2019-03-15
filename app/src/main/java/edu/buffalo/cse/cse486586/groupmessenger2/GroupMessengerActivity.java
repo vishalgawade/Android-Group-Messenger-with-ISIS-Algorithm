@@ -29,15 +29,18 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.concurrent.PriorityBlockingQueue;
 
 /**
  * GroupMessengerActivity is the main Activity for the assignment.
- * 
+ *
  * @author stevko
  *
  */
@@ -51,7 +54,7 @@ public class GroupMessengerActivity extends Activity {
     private int largestProposedSeq=0;
     private int largestAgreedSeq=0;
     private static int msgKey = 0;
-
+    PriorityQueue<Message> finaldeliveryQueue=new PriorityQueue<Message>(50,new MessageComparator());
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -133,7 +136,7 @@ public class GroupMessengerActivity extends Activity {
     }
 
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
-        PriorityQueue<Message> deliveryQueue=new PriorityQueue<Message>(25,new MessageComparator());
+        PriorityQueue<Message> deliveryQueue=new PriorityQueue<Message>(50,new MessageComparator());
         final Uri mUri = buildUri("content", "edu.buffalo.cse.cse486586.groupmessenger2.provider");
         @Override
         protected Void doInBackground(ServerSocket... sockets) {
@@ -152,9 +155,10 @@ public class GroupMessengerActivity extends Activity {
             // the largest agreed sequence number it has seen in g and PgQ its own largest proposed sequence number.
             while(!serverSocket.isClosed()) {
                 try {
+                    // serverSocket.setSoTimeout(5000);
                     client = serverSocket.accept();
                     is = client.getInputStream();
-                   // bf = new BufferedReader(new InputStreamReader(is));
+                    // bf = new BufferedReader(new InputStreamReader(is));
                     String s = null;
                     di=new DataInputStream(is);
                     msg=di.readUTF();
@@ -162,38 +166,73 @@ public class GroupMessengerActivity extends Activity {
                     //first time message sent to all avds asking for proposed seq no.
                     //Each process Q replies to P with a proposal for the message’s agreed sequence number PgQ = max(AQg , PgQ) + 1.
                     // Q provisionally assigns the proposed sequence number to the message and places it in its hold-back queue.
+
                     if(m.getProposed_seq()==-1){
                         largestProposedSeq=Math.max(largestProposedSeq,largestAgreedSeq)+1;
+                        //  largestProposedSeq=largestProposedSeq++;
                         m.setProposed_seq(largestProposedSeq);
+//                        m.setProposed_seq(largestProposedSeq+m.getAvd_id());
                         deliveryQueue.add(m);
+                        //    Log.e(TAG,"Message after attaching proposed seq no for sending:"+m.toString());
+                        //    Log.e(TAG,"first time Proposed:"+largestProposedSeq+" agreed:"+largestAgreedSeq);
                         //send message to all avds with proposed sequence no
                         OutputStream os=client.getOutputStream();
                         ds=new DataOutputStream(os);
-                       // os.write(Message.encodeMessage(m).getBytes());
+                        // os.write(Message.encodeMessage(m).getBytes());
+
                         ds.writeUTF(Message.encodeMessage(m));
+                    }
+                    else if(m.getProposed_seq()==-2&&m.getMessage().equals("FAILED")){
+                        deleteMessagesFromFailedClient(m.getFailedPort());
                     }
                     else {
                         largestAgreedSeq = Math.max(m.getProposed_seq(), largestAgreedSeq);
+                        //largestAgreedSeq =m.getProposed_seq();
+
+                        // Log.e(TAG,"Message after attaching proposed seq no for sending:"+m.toString());
+                        //  Log.e(TAG,"Second time Proposed:"+largestProposedSeq+" agreed:"+largestAgreedSeq);
                         //attach agreed seq to message,and reinsert
                         //Each process Q in g sets AQg = max(AQg , a)
                         // and attaches a to the message (identified by i), reordering the hold-back queue if necessary.
                         Message temp = null;
-                        for (Message element : deliveryQueue) {
+                        Iterator<Message> itr=deliveryQueue.iterator();
+                        while(itr.hasNext()){
+                            Message element=itr.next();
+                            Log.e(TAG,"delivery queue before removing:"+element.toString());
+                            // Log.e(TAG,"Proposed:"+largestProposedSeq+" agreed:"+largestAgreedSeq);
                             if (element.getAvd_id() == m.getAvd_id() && element.getMessage().equals(m.getMessage())) {
                                 temp = element;
                                 break;
                             }
                         }
                         deliveryQueue.remove(temp);
+                        //  m.setProposed_seq(m.getProposed_seq()+m.getAvd_id());
+                        //  m.setProposed_seq(m.getProposed_seq());
                         deliveryQueue.add(m);
+                        //  Log.e(TAG,"delivery queue after removing:"+m.toString());
                         //display messages
+                        /*Iterator<Message> itr=deliveryQueue.iterator();
+                        while(itr.hasNext()){
+                            Message curr=itr.next();
+                            if(curr.isDelivered()){
+                                ContentValues c = new ContentValues();
+                                c.put(KEY_FIELD, "" + msgKey++);
+                                c.put(VALUE_FIELD, curr.getMessage());
+                                contentProvider.insert(mUri, c);
+                                publishProgress(msgKey+" "+curr.getMessage().replace("\n",""));
+                                itr.remove();
+                            }
+                        }*/
                         while (!deliveryQueue.isEmpty()&&deliveryQueue.peek().isDelivered()) {
+//                            Log.e(TAG,"delivery queue deliver msg with key:"+msgKey+"and msg:"+m.toString());
                             Message remove = deliveryQueue.poll();
+                            Log.e(TAG,"delivery queue deliver msg with key:"+msgKey+"and msg:"+remove.toString());
+                            finaldeliveryQueue.add(remove);
                             ContentValues c = new ContentValues();
                             c.put(KEY_FIELD, "" + msgKey++);
                             c.put(VALUE_FIELD, remove.getMessage());
                             contentProvider.insert(mUri, c);
-                            publishProgress(remove.getMessage().replace("\n",""));
+                            publishProgress(msgKey+" "+remove.getMessage().replace("\n",""));
                         }
                     }
                 } catch (IOException e) {
@@ -204,8 +243,17 @@ public class GroupMessengerActivity extends Activity {
             return null;
         }
 
-
-
+        protected void deleteMessagesFromFailedClient(int failedClient) {
+            Iterator<Message> itr=deliveryQueue.iterator();
+            while(itr.hasNext()) {
+                Message msg=itr.next();
+                Log.e(TAG, "getting queue messages for removing faulty avd:" + msg.toString());
+                if (msg.getAvd_id() == failedClient && !msg.isDelivered()) {
+                    Log.e(TAG, "deleting queue  faulty avd msg :" + msg.toString());
+                    itr.remove();
+                }
+            }
+        }
 
         protected void onProgressUpdate(String...strings) {
             /*
@@ -257,72 +305,172 @@ public class GroupMessengerActivity extends Activity {
         DataInputStream di=null;
         List<Integer> allProposedNo=new ArrayList<Integer>(5);
         Message newMsg;
+        Integer failedAvd = -1;
+        String clientPort = null;
+        Socket socket;
         @Override
         protected Void doInBackground(String... msgs) {
             try {
                 myPort=msgs[1];
+
                 //When a process P wishes to multicast a message m to group g
                 // it B-multicasts ⟨m, i⟩ to g, where i is a unique identifier for m.
-                for(int i=0;i<remotePort.length;i++){
-                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                            Integer.parseInt(remotePort[i]));
-                    String msgToSend = msgs[0];
-                    //send message as delivered 'false' with avd and generated seq no.
-                    Message m=new Message(-1,msgToSend,false,Integer.parseInt(myPort));
-                    //socket.setSoTimeout(500);
-                    //reference:https://docs.oracle.com/javase/7/docs/api/java/net/Socket.html
-                    //reference:https://docs.oracle.com/javase/7/docs/api/java/io/OutputStream.html
-                    OutputStream os=socket.getOutputStream();
-                    ds=new DataOutputStream(os);
-                    ds.writeUTF(Message.encodeMessage(m));
-                   // os.write(Message.encodeMessage(m).getBytes());
-                    is = socket.getInputStream();
-                   // bf = new BufferedReader(new InputStreamReader(is));
-                    di=new DataInputStream(is);
-                    //msg=bf.readLine();
-                    msg=di.readUTF();
-                    newMsg=Message.decodeMessage(msg);
-                    if(newMsg.getAvd_id()==Integer.parseInt(myPort)){
-                        System.out.println(myPort+" "+newMsg.getProposed_seq());
-                        allProposedNo.add(newMsg.getProposed_seq());
+                for(int i=0;i<remotePort.length;i++) {
+                    if (failedAvd != Integer.parseInt(remotePort[i])) {
+                        clientPort = remotePort[i];
+                        socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                                Integer.parseInt(remotePort[i]));
+                        String msgToSend = msgs[0];
+                        //send message as delivered 'false' with avd and generated seq no.
+                        Message m = new Message(-1, msgToSend, false, Integer.parseInt(myPort), failedAvd);
+                        //socket.setSoTimeout(500);
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/net/Socket.html
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/io/OutputStream.html
+                        OutputStream os = socket.getOutputStream();
+                        ds = new DataOutputStream(os);
+                        Log.e(TAG, "Message sent for first time:" + m.toString());
+                        String messageString = Message.encodeMessage(m);
+
+                        ds.writeUTF(messageString);
+                        // os.write(Message.encodeMessage(m).getBytes());
+                        try {
+                            is = socket.getInputStream();
+                            // bf = new BufferedReader(new InputStreamReader(is));
+                            di = new DataInputStream(is);
+                            //msg=bf.readLine();
+                            msg = di.readUTF();
+                            newMsg = Message.decodeMessage(msg);
+                            if (newMsg.getAvd_id() == Integer.parseInt(myPort)) {
+                                System.out.println(myPort + " " + newMsg.getProposed_seq());
+                                allProposedNo.add(newMsg.getProposed_seq());
+                            }
+                            Log.e(TAG, "Message  after receiving  proposed seq:" + newMsg.toString());
+                        } catch (SocketTimeoutException e) {
+                            Log.e(TAG, "ClientTask socket SocketTimeout Exception");
+                            failedAvd = Integer.parseInt(clientPort);
+                            sendFailedPortMsg(failedAvd, myPort);
+                        } catch (IOException e) {
+                            Log.e(TAG, "ClientTask socket IOException");
+                            failedAvd = Integer.parseInt(clientPort);
+                            sendFailedPortMsg(failedAvd, myPort);
+                        } catch (Exception e) {
+                            Log.e(TAG, "ClientTask socket Exception");
+                            //  failedAvd = Integer.parseInt(clientPort);
+                            //  sendFailedPortMsg(failedAvd,myPort);
+                        } finally {
+                            is.close();
+                            ds.close();
+                            socket.close();
+                        }
                     }
-                    socket.close();
                 }
 
-            } catch (UnknownHostException e) {
-                Log.e(TAG, "ClientTask UnknownHostException");
-            } catch (IOException e) {
+            }  /*catch(SocketTimeoutException e){
+                Log.e(TAG, "ClientTask socket SocketTimeout Exception");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
+            }
+            catch(IOException e){
                 Log.e(TAG, "ClientTask socket IOException");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
+            }*/
+            catch (Exception e){
+                Log.e(TAG, "ClientTask socket Exception");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
             }
             //P collects all the proposed sequence numbers and selects the largest a; it then B-multicasts ⟨i, a⟩ to g.
             int agreedno=Collections.max(allProposedNo);
             newMsg.setProposed_seq(agreedno);
             newMsg.setDelivered(true);
+            newMsg.setFailedPort(failedAvd);
             try {
                 for(int i=0;i<remotePort.length;i++){
-                    Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                            Integer.parseInt(remotePort[i]));
-                    String msgToSend = Message.encodeMessage(newMsg);
-                    //send message as delivered 'false' with avd and generated seq no.
-                   // Message m=new Message(-1,msgToSend,false,Integer.parseInt(myPort));
-                    //socket.setSoTimeout(500);
-                    //reference:https://docs.oracle.com/javase/7/docs/api/java/net/Socket.html
-                    //reference:https://docs.oracle.com/javase/7/docs/api/java/io/OutputStream.html
-                    OutputStream os=socket.getOutputStream();
-                    ds=new DataOutputStream(os);
-                    ds.writeUTF(msgToSend);
-                    socket.close();
+                    if (failedAvd != Integer.parseInt(remotePort[i])) {
+                        clientPort = remotePort[i];
+                        socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                                Integer.parseInt(remotePort[i]));
+
+                        String messageString = Message.encodeMessage(newMsg);
+                        //send message as delivered 'false' with avd and generated seq no.
+                        // Message m=new Message(-1,msgToSend,false,Integer.parseInt(myPort));
+                        //socket.setSoTimeout(500);
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/net/Socket.html
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/io/OutputStream.html
+                        OutputStream os = socket.getOutputStream();
+                        ds = new DataOutputStream(os);
+                        ds.writeUTF(messageString);
+                    }
                 }
 
-            } catch (UnknownHostException e) {
-                Log.e(TAG, "ClientTask UnknownHostException");
+            }catch(SocketTimeoutException e){
+                Log.e(TAG, "ClientTask max send socket SocketTimeout Exception");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
+            }
+            catch (UnknownHostException e) {
+                Log.e(TAG, "ClientTask max send UnknownHostException");
             } catch (IOException e) {
-                Log.e(TAG, "ClientTask socket IOException");
+                Log.e(TAG, "ClientTask max send socket IOException");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
+            }
+            catch (Exception e){
+                Log.e(TAG, "ClientTask max send socket Exception");
+                failedAvd = Integer.parseInt(clientPort);
+                sendFailedPortMsg(failedAvd,myPort);
+            }
+            finally {
+                try{
+                    ds.close();
+                    socket.close();
+                }
+                catch (Exception e){
+                    Log.e(TAG,"Error Closing max socket");
+                }
             }
             return null;
         }
-    }
+        private void sendFailedPortMsg(int port,String myPort) {
+            try {
+                for (int i = 0; i < remotePort.length; i++) {
+                    if (port != Integer.parseInt(remotePort[i])) {
+                        // clientPort = remotePort[i];
 
+                        socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                                Integer.parseInt(remotePort[i]));
+                        //String msgToSend = msgs[0];
+                        //send message as delivered 'false' with avd and generated seq no.
+                        Message m = new Message(-2, "FAILED", false, Integer.parseInt(myPort), port);
+                        //socket.setSoTimeout(500);
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/net/Socket.html
+                        //reference:https://docs.oracle.com/javase/7/docs/api/java/io/OutputStream.html
+                        OutputStream os = socket.getOutputStream();
+                        DataOutputStream ds = new DataOutputStream(os);
+                        Log.e(TAG,"Message sent after failed:"+m.toString());
+                        String messageString = Message.encodeMessage(m);
+
+                        ds.writeUTF(messageString);
+//                    ds.close();
+//                    socket.close();
+                    }
+                }
+            }
+            catch(Exception e){
+                Log.e(TAG, "ClientTask sendFailedPortMsg IOException");
+            }
+            finally {
+                try{
+                    ds.close();
+                    socket.close();
+                }
+                catch (Exception e){
+                    Log.e(TAG,"Error Closing max socket");
+                }
+            }
+        }
+    }
     private Uri buildUri(String scheme, String authority) {
         Uri.Builder uriBuilder = new Uri.Builder();
         uriBuilder.authority(authority);
