@@ -41,7 +41,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 /**
  * GroupMessengerActivity is the main Activity for the assignment.
  *
- * @author stevko
+ * @author vgawade
  *
  */
 public class GroupMessengerActivity extends Activity {
