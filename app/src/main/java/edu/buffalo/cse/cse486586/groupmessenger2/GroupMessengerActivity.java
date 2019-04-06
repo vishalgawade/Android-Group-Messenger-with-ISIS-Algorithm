@@ -293,7 +293,7 @@ public class GroupMessengerActivity extends Activity {
      * It is created by ClientTask.executeOnExecutor() call whenever OnKeyListener.onKey() detects
      * an enter key press event.
      *
-     * @author stevko
+     * @author vgawade
      *
      */
     private class ClientTask extends AsyncTask<String, Void, Void> {
